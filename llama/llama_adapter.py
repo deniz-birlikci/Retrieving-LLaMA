@@ -291,7 +291,7 @@ class LLaMA_adapter(nn.Module):
             prev_pos = cur_pos
 
         # Option 1: Return the average of hiddens
-        hidden_representation = torch.mean(torch.stack(hiddens), dim=0)
+        hidden_representation = torch.mean(torch.stack(hiddens), dim=1)
         
         # Option 2: Return the last element of hiddens
         # hidden_representation = hiddens[-1]
