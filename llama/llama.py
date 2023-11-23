@@ -283,8 +283,13 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, params: ModelArgs):
+    def __init__(self, params: ModelArgs, 
+                 # MODIF
+                 embedding_dim=512):
         super().__init__()
+        # MODIF
+        self.embedding_dim = embedding_dim
+        
         self.params = params
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
@@ -305,6 +310,11 @@ class Transformer(nn.Module):
             self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
         )
 
+        # MODIF
+        self.out_retrieval = Linear(
+            params.dim, embedding_dim, bias=False
+        )
+        
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape

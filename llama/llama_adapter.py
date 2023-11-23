@@ -209,7 +209,97 @@ class LLaMA_adapter(nn.Module):
         output = self.llama.output(h[:, -1, :])
 
         return output.float()
+    
+    # MODIFICATION
+    @torch.inference_mode()
+    def forward_hidden_inference(self, visual_query, tokens, start_pos: int):
+        _bsz, seqlen = tokens.shape
+        h = self.llama.tok_embeddings(tokens)
+        freqs_cis = self.llama.freqs_cis.to(h.device)
+        freqs_cis = freqs_cis[start_pos : start_pos + seqlen]
+        mask = None
+        mask = torch.full((1, 1, seqlen, seqlen), float("-inf"), device=h.device)
+        mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
+        for layer in self.llama.layers[:-1 * self.query_layer]:
+            h = layer(h, start_pos, freqs_cis, mask)
+
+        adapter = self.adapter_query.weight.reshape(self.query_layer, self.query_len, -1).unsqueeze(1)
+        adapter_index = 0
+        for layer in self.llama.layers[-1 * self.query_layer:]:
+            dynamic_adapter = adapter[adapter_index].repeat(_bsz, 1, 1)
+            dynamic_adapter = dynamic_adapter + visual_query
+            h = layer(h, start_pos, freqs_cis, mask, dynamic_adapter)
+            adapter_index = adapter_index + 1
+
+        h = self.llama.norm(h)
+        output = self.llama.output(h[:, -1, :])
+
+        return h.float(), output.float()
+    
+    # MODIFICATION
+    @torch.inference_mode()
+    def generate_ret(
+        self, imgs, prompts,
+        max_gen_len: int = 256,
+        temperature: float = 0.1,
+        top_p: float = 0.75,
+    ):
+        bsz = len(imgs)
+        params = self.llama.params
+        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
+        assert len(imgs) == len(prompts)
+
+        with torch.cuda.amp.autocast():
+            visual_query = self.forward_visual(imgs)
+
+        if isinstance(prompts[0], str):
+            prompts = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
+
+        min_prompt_size = min([len(t) for t in prompts])
+        max_prompt_size = max([len(t) for t in prompts])
+
+        total_len = min(params.max_seq_len, max_gen_len + max_prompt_size)
+
+        tokens = torch.full((bsz, total_len), self.tokenizer.pad_id).cuda().long()
+
+        for k, t in enumerate(prompts):
+            tokens[k, : len(t)] = torch.tensor(t).cuda().long()
+        input_text_mask = tokens != self.tokenizer.pad_id
+        start_pos = min_prompt_size
+        prev_pos = 0
+        
+        hiddens = []
+        for cur_pos in range(start_pos, total_len):
+            with torch.cuda.amp.autocast():
+                hidden, logits = self.forward_hidden_inference(visual_query, tokens[:, prev_pos:cur_pos], prev_pos)
+                hiddens.append(hidden)
+            if temperature > 0:
+                probs = torch.softmax(logits / temperature, dim=-1)
+                next_token = sample_top_p(probs, top_p)
+            else:
+                next_token = torch.argmax(logits, dim=-1)
+            next_token = next_token.reshape(-1)
+
+            next_token = torch.where(
+                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+            )
+            tokens[:, cur_pos] = next_token
+            # trick: early stop if bsz==1
+            if bsz == 1 and next_token[0] == self.tokenizer.eos_id:
+                break
+            prev_pos = cur_pos
+
+        # Option 1: Return the average of hiddens
+        hidden_representation = torch.mean(torch.stack(hiddens), dim=0)
+        
+        # Option 2: Return the last element of hiddens
+        # hidden_representation = hiddens[-1]
+
+        embedding = self.llama.out_retrieval(hidden_representation)
+        return embedding
+
+    
     @torch.inference_mode()
     def generate(
         self, imgs, prompts,
