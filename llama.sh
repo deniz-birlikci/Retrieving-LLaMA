@@ -13,7 +13,7 @@ TARGET_FOLDER="/content/llama-weights" # where all files should end up
 
 declare -A N_SHARD_DICT
 
-mkdir -p ${TARGET_FOLDER}"
+mkdir -p ${TARGET_FOLDER}
 
 N_SHARD_DICT["7B"]="0"
 N_SHARD_DICT["13B"]="1"
