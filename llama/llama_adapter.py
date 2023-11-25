@@ -235,7 +235,7 @@ class LLaMA_adapter(nn.Module):
         h = self.llama.norm(h)
         output = self.llama.output(h[:, -1, :])
 
-        return h.float(), output.float()
+        return h[:, -1, :].float(), output.float()
     
     # MODIFICATION
     @torch.inference_mode()
@@ -273,6 +273,66 @@ class LLaMA_adapter(nn.Module):
         for cur_pos in range(start_pos, total_len):
             with torch.cuda.amp.autocast():
                 hidden, logits = self.forward_hidden_inference(visual_query, tokens[:, prev_pos:cur_pos], prev_pos)
+                hiddens.append(hidden)
+            if temperature > 0:
+                probs = torch.softmax(logits / temperature, dim=-1)
+                next_token = sample_top_p(probs, top_p)
+            else:
+                next_token = torch.argmax(logits, dim=-1)
+            next_token = next_token.reshape(-1)
+
+            next_token = torch.where(
+                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+            )
+            tokens[:, cur_pos] = next_token
+            # trick: early stop if bsz==1
+            if bsz == 1 and next_token[0] == self.tokenizer.eos_id:
+                break
+            prev_pos = cur_pos
+
+        with torch.cuda.amp.autocast():
+            # Option 1: Return the average of hiddens
+            hidden_representation = torch.mean(torch.stack(hiddens), dim=0)
+            
+            # Option 2: Return the last element of hiddens
+            # hidden_representation = hiddens[-1]
+
+            # Convert hidden_representation to float type to avoid RuntimeError
+            embedding = self.llama.out_retrieval(hidden_representation)
+        return embedding
+    
+    # MODIFICATION
+    @torch.inference_mode()
+    def generate_ret_text_only(
+        self, prompts,
+        max_gen_len: int = 256,
+        temperature: float = 0.1,
+        top_p: float = 0.75,
+    ):
+        bsz = len(prompts)
+        params = self.llama.params
+        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
+
+        if isinstance(prompts[0], str):
+            prompts = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
+
+        min_prompt_size = min([len(t) for t in prompts])
+        max_prompt_size = max([len(t) for t in prompts])
+
+        total_len = min(params.max_seq_len, max_gen_len + max_prompt_size)
+
+        tokens = torch.full((bsz, total_len), self.tokenizer.pad_id).cuda().long()
+
+        for k, t in enumerate(prompts):
+            tokens[k, : len(t)] = torch.tensor(t).cuda().long()
+        input_text_mask = tokens != self.tokenizer.pad_id
+        start_pos = min_prompt_size
+        prev_pos = 0
+        
+        hiddens = []
+        for cur_pos in range(start_pos, total_len):
+            with torch.cuda.amp.autocast():
+                hidden, logits = self.llama.forward_ret(tokens[:, prev_pos:cur_pos], prev_pos)
                 hiddens.append(hidden)
             if temperature > 0:
                 probs = torch.softmax(logits / temperature, dim=-1)
