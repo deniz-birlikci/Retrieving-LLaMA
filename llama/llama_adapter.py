@@ -35,8 +35,16 @@ class LLaMA_adapter(nn.Module):
         ) # max_batch_size only affects inferenc
 
         # 1. clip and clip projector
-        self.clip, self.clip_transform = clip.load(clip_model)
-
+        if clip_model == "recipeCLIP":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model_path = "/clip_weights/model.pth"
+            self.clip, self.clip_transform = clip.load("ViT-B/32", device=device)
+            self.clip.set_increased_context_length(512)
+            self.clip.prep_for_finetuning(device)
+            self.clip.eval()
+        else:
+            self.clip, self.clip_transform = clip.load(clip_model)
+            
         clip_dim = self.clip.visual.proj.shape[1]
         self.clip_proj = nn.Linear(clip_dim, v_embed_dim)
         self.clip_proj_norm = nn.LayerNorm(v_embed_dim)
@@ -105,6 +113,21 @@ class LLaMA_adapter(nn.Module):
                     if train_name in name:
                         para.data = para.data.float()
                         para.requires_grad = True
+                        
+        elif phase == 'recipe_train':
+            # Attend over all the Adapter Values
+            train_param_name = ['gate', 'clip_proj', 'clip_proj_norm', 'visual_query', 'visual_blocks', 'visual_proj', 'visual_proj_norm', 'adapter_query']
+            for name, para in self.named_parameters():
+                for train_name in train_param_name:
+                    if train_name in name:
+                        para.data = para.data.float()
+                        para.requires_grad = True
+                        
+            # Unfreeze the parameters of the llama.out_retrieval layer
+            for param in self.llama.out_retrieval.parameters():
+                print(f"Training {param.data.shape}")
+                param.data = param.data.float()
+                param.requires_grad = True
         
         else:
             raise ValueError(f"Unknown model phase: {phase}")
