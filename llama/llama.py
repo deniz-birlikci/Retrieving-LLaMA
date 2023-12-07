@@ -312,7 +312,7 @@ class Transformer(nn.Module):
 
         # MODIF
         self.out_retrieval = Linear(
-            params.dim, embedding_dim, bias=False
+            params.dim, embedding_dim, bias=True
         )
         
     @torch.inference_mode()
