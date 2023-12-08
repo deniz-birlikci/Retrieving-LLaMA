@@ -541,7 +541,12 @@ def load(name, llama_dir, llama_type="7B",
         w_new_gate=model_cfg.get('w_lora', False), # for compatibility
         phase=phase)
 
-    load_result = model.load_state_dict(ckpt['model'], strict=False)
+    model_state_dict = {}
+    for key in ckpt['model']:
+        if 'clip_proj.weight' not in key:
+            model_state_dict[key] = ckpt['model'][key]
+            
+    load_result = model.load_state_dict(model_state_dict, strict=False)
 
     assert len(load_result.unexpected_keys) == 0, f"Unexpected keys: {load_result.unexpected_keys}"
     return model.to(device), model.clip_transform
