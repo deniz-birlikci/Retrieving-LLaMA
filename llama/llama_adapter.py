@@ -541,10 +541,13 @@ def load(name, llama_dir, llama_type="7B",
         w_new_gate=model_cfg.get('w_lora', False), # for compatibility
         phase=phase)
 
-    model_state_dict = {}
-    for key in ckpt['model']:
-        if 'clip_proj.weight' not in key:
-            model_state_dict[key] = ckpt['model'][key]
+    if clip_model == "recipeCLIP":
+        model_state_dict = {}
+        for key in ckpt['model']:
+            if 'clip_proj.weight' not in key:
+                model_state_dict[key] = ckpt['model'][key]
+    else:
+        model_state_dict = ckpt['model']
             
     load_result = model.load_state_dict(model_state_dict, strict=False)
 
